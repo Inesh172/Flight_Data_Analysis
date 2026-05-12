@@ -63,7 +63,7 @@ Final report summarising:
 * Predictive performance comparison
 
 
-### `Q2 R.Rmd`
+### `flight_data_analysis_R.Rmd`
 
 R Markdown source file containing the same analysis from both python files in R code.
 
