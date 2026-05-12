@@ -1,0 +1,743 @@
+---
+title: "ST2195 Coursework part 2 [Flight Data Analysis (2004 - 2008)]"
+author: "inesh"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# import libraries 
+library(dplyr)
+
+# Read flight data from 2004 to 2008 & adding a year column to the dataframe
+years <- 2004:2008
+file_names <- paste0(years, ".csv.bz2")
+
+flights_df <- lapply(seq_along(file_names), function(i) {
+  df <- read.csv(file_names[i])
+  return(df)
+}) %>%
+  bind_rows()
+  
+# a) find best times of day and days of week to min. delays each yr
+
+# Data cleaning of flights_df 
+
+# removing unnecessary columns in dataframe for analysis & excluding flight data where flights were cancelled or diverted and departure, arrivals >=2400
+flights_filtered <- flights_df %>% 
+  select(-TaxiIn, -TaxiOut, -CancellationCode,
+         -CarrierDelay,-WeatherDelay, -SecurityDelay, -NASDelay, -LateAircraftDelay) %>%
+  filter(Cancelled == 0 & Diverted == 0 & DepTime < 2400 & ArrTime < 2400) 
+
+# mutating flights_filtered to find the distance of flights by km & adding another column,delay, based on arrival delay and grouping them by early, on-time, small delay, medium delay, long-delay
+flights_filtered <- flights_filtered %>%
+  mutate(
+    delay_category = case_when(
+      ArrDelay < 0 ~ "Early",
+      ArrDelay <= 15 ~ "On-Time",
+      ArrDelay > 15 & ArrDelay < 30 ~ "Short Delay",
+      ArrDelay >= 30 & ArrDelay < 45 ~ "Medium Delay",
+      ArrDelay >= 45 ~ "Long Delay"))
+
+# importing libraries for plotting bar graph
+library(scales)
+library(ggplot2)
+library(ggthemes)
+
+# Converting year and delay category into factor before faceting 
+flights_filtered$Year <- as.factor(flights_filtered$Year)
+flights_filtered$delay_category <- as.factor(flights_filtered$delay_category)
+
+# Arranging delay categories in order
+flights_filtered$delay_category <- factor(flights_filtered$delay_category, 
+    levels = c("Early", "On-Time", "Short Delay", "Medium Delay", "Long Delay"))
+
+# Calculating percentage of each delay category for the different distance category flights each year for labelling bar graph
+delay_perc <- flights_filtered %>%
+  group_by(Year, delay_category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(Year) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+# Constructing faceted bar graph for the percentage and count of each delay category across years
+bar1 <- ggplot(delay_perc, aes(x = delay_category, y = count, fill = delay_category)) +
+  geom_col(color = "black") +
+  scale_fill_manual(values = c(
+    "Early" = "#66c2a5",
+    "On-Time" = "#abdda4",
+    "Short Delay" = "#fee08b",
+    "Medium Delay" = "#fdae61",
+    "Long Delay" = "#d53e4f"
+  )) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")),
+            vjust = -0.3, size = 2.8) +
+  facet_grid( ~ Year) +
+labs(title="Distribution of Flight Delays Across Years(2004 - 2008)", 
+      x="Delay Category", 
+      y="Count") +
+theme_fivethirtyeight(base_size = 9) +
+theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+      axis.text.y = element_text(size = 7),
+      plot.margin = margin(10, 10, 20, 20)
+      ) +
+scale_y_continuous(
+    limits = c(0,4000000),
+    breaks = seq(0,4000000, by = 500000),
+    labels = scales::comma
+  )
+
+# Extracting hour no. from DepTime and ArrTime 
+flights_filtered$dep_hour <- floor(flights_filtered$DepTime / 100) 
+flights_filtered$arr_hour <- floor(flights_filtered$ArrTime / 100) 
+
+# Adding hr_grp column in flights_filtered dataframe, changing the dayofweek to factor and the different days for better readability, grouping them by year, dayofweek and hr_grp 
+flights_filtered <- flights_filtered %>%
+  mutate(
+    hr_grp = cut(dep_hour,
+                      breaks = c(0, 3, 6, 9, 12, 15, 18, 21, 24),
+                      labels = c("0-2", "3-5", "6-8", "9-11", "12-14", "15-17", "18-20", "21-23"),
+                      include.lowest = TRUE, right = FALSE),
+         DayOfWeek = factor(DayOfWeek,levels = 1:7,
+                            labels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")),
+         DayOfWeek = factor(DayOfWeek, levels = rev(levels(DayOfWeek)))
+  )
+
+# Grouping by year, DayofWeek and hr_grp for heatmap
+arr_delay_heatmap <- flights_filtered %>%
+  group_by(Year, DayOfWeek, hr_grp) %>%
+  summarise(
+    avg_arr_delay = mean(ArrDelay, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Calculating the average delay time per 3-hour for each year for benchmarking
+block_benchmark <- flights_filtered %>%
+  group_by(Year, hr_grp) %>%
+  summarise(block_average_delay = mean(ArrDelay, na.rm = TRUE), .groups = "drop") 
+
+# Merging benchmark into heatmap and adding levels for the delays for plotting 
+arr_delay_heatmap <- arr_delay_heatmap %>%
+  left_join(block_benchmark, by = c("Year", "hr_grp")) %>%
+  mutate(
+    delay_class = factor(case_when(
+      avg_arr_delay < block_average_delay - 2 ~ "Below Average",
+      avg_arr_delay > block_average_delay + 2 ~ "Above Average",
+      abs(avg_arr_delay - block_average_delay) <= 2 ~ "Average",
+      TRUE ~ "Average"
+      ), levels = c("Below Average","Average", "Above Average"))
+  )
+
+# Assigning colours for each respective delay class
+delay_colours <- c(
+  "Below Average" = "#2ECC71",
+  "Average" = "#F4D03f",
+  "Above Average" = "#E74C3C"
+)
+
+# Creating benchmark labels for each year
+overall_block_avg <- block_benchmark %>%
+  group_by(Year) %>%
+  summarise(overall_delay = round(mean(block_average_delay, na.rm = TRUE), 1), .groups = "drop")
+
+# Defining order of delay levels
+delay_levels <- c("Early", "On-Time", "Short Delay", "Medium Delay", "Long Delay")
+
+# Adding block delay category for each 3-hour block according to delay caegories from before 
+block_coloured <- block_benchmark %>%
+  mutate(
+    block_delay_category = case_when(
+      block_average_delay < 0 ~ "Early",
+      block_average_delay < 15 ~ "On-Time",
+      block_average_delay < 30 ~ "Short Delay",
+      block_average_delay < 45 ~ "Medium Delay",
+      TRUE ~ "Long Delay"
+    ),
+    block_delay_category = factor(block_delay_category, levels = delay_levels)
+  )
+
+# Printing for each year for the averages of the hr_grp of each year & the overall average of the averages of the hour_grp 
+years <- 2004:2008
+
+block_average_tables <- map(years, function(year_display) {
+  block_coloured %>%
+    filter(Year == year_display) %>%
+    mutate(`Block Avg Delay` = round(block_average_delay, 1)) %>%
+    select(hr_grp, `Block Avg Delay`, block_delay_category)
+})
+
+for (i in seq_along(block_average_tables)) {
+  cat(paste0("\n===== Year: ", years[i], " =====\n"))
+  print(block_average_tables[[i]])
+}
+
+# Calculate the overall block average delay for each year
+overall_block_avg <- block_coloured %>%
+  group_by(Year) %>%
+  summarise(overall_delay = round(mean(block_average_delay, na.rm = TRUE), 1), .groups = "drop")
+
+# Print the overall block average delay for each year
+print(overall_block_avg)
+
+# Constructing faceted heatmaps of the average arrival delay per airport, in 3-hour blocks each year
+ggplot(arr_delay_heatmap, aes(x = hr_grp, y = DayOfWeek, fill = delay_class)) +
+  geom_tile(color = "white", linewidth = 0.2, width = 1.05, height = 0.95) +
+  geom_text(aes(label = round(avg_arr_delay, 2)), size = 2.7, color = "black", fontface = "bold") +
+  facet_wrap(~ Year) +
+scale_fill_manual(
+  values = delay_colours, 
+  name = "Delay class :", 
+  guide = guide_legend(override.aes = list(alpha =1))
+) +
+labs(
+  title = "Heatmap of Avg Arrival Delay by Day in 3-Hour Blocks Each Year",
+  x = "3-Hour Block",
+  y = "Day of Week"
+) +
+theme_fivethirtyeight(base_size = 9) +
+theme(
+  panel.spacing = unit(1, "lines"),
+  axis.text.x = element_text(size = 7, angle = 45, hjust = 1, face = "bold"),
+  axis.text.y = element_text(size = 7, face = "bold"),
+  strip.text = element_text(size = 11, face = "bold"),
+  plot.title = element_text(hjust = 0.5, face = "bold"),
+  legend.position = "top",
+  plot.margin = margin(10, 10, 20, 20)
+)
+
+# b) Evaluate if older planes suffer more delays on a yr-to-yr basis
+library(tidyr)
+library(lubridate)
+# reading necessary plane datasets
+planes_df <- read.csv("plane-data.csv", header = TRUE)
+
+# there are 549 rows of empty data filled with spaces
+sapply(planes_df, function(x) sum(x == "", na.rm = TRUE))
+
+# trimming and removing rows with empty data in planes
+planes_df <- planes_df %>% 
+mutate(across(everything(), ~ na_if(trimws(.), "")))
+planes_df <- na.omit(planes_df)  
+
+# removing rows with "None" values, "0000" values of the "Year" and "issue_date" columns
+planes_df$year[planes_df$year %in% c("None", "0000")] <- NA
+planes_df$year <- as.numeric(planes_df$year)
+
+planes_df <- planes_df %>%
+filter(issue_date != "None" & !is.na(year)) 
+
+# Creating a new column and combining the year, month and day to a date format (yyyy-mm-dd) in the flights_filtered dataframe
+flights_filtered$flight_date <- as.Date(with(flights_filtered, 
+                                             paste(Year, Month, DayofMonth, sep = "-")), 
+                                        format = "%Y-%m-%d") 
+
+# Converting issue date to date format (yyyy-mm-dd) 
+planes_df$issue_date <- as.Date(planes_df$issue_date, format = "%m/%d/%Y")
+
+# Renaming the tailnum column in planes_df to TailNum
+planes_df <- planes_df %>% 
+rename(TailNum = tailnum)
+
+# Joining planes_df and flights_filtered dataframes by tailnum, adding the issue_date collumn of each plane
+flights_filtered <- flights_filtered %>%
+left_join(planes_df %>% select(TailNum, issue_date), by = "TailNum")
+
+# Removing NA values in flights_filtered dataframe where the issue dates are not available for the respective TailNum
+flights_filtered <- flights_filtered %>%
+filter(!is.na(issue_date))
+
+# Adding a new column,flight_age, in the flights_filtered dataframe, using the year of flight and the issue_date in consideration of leap years and categorising them by age categories - new & old
+flights_filtered <- flights_filtered %>%
+  group_by(TailNum, Year) %>%
+  mutate(
+    last_flight_date = max(flight_date, na.rm = TRUE),
+    flight_age = round(as.numeric(difftime(last_flight_date, issue_date, units = "days")) / 365.25, 2),
+    flight_age_category = case_when(
+      flight_age >= 0 & flight_age <= 10 ~ "New",
+      flight_age > 10 & flight_age < 20 ~ "Mid-age",
+      flight_age >= 20 ~ "Old"
+    )
+  )
+
+# Removing rows where flight_age less than or equal to 0 in flights_filtered dataframe
+flights_filtered <- flights_filtered %>%
+  filter(flight_age > 0)
+  
+# Organising the flight_age_category of new, mid-age and old
+flights_filtered$flight_age_category <- factor(flights_filtered$flight_age_category, levels = c("New", "Mid-age", "Old"))
+
+# Counting the number of new and old planes for all 5 years
+flight_age_dist <- flights_filtered %>%
+group_by(Year, flight_age_category) %>%
+summarise(total_planes = n_distinct(TailNum), .groups = "drop") %>%
+arrange(Year, flight_age_category)
+
+print(flight_age_dist)
+
+# Plotting line graphs for both new and old flight_age_category against the average arrival delay across the years
+flights_age_summary <- flights_filtered %>%
+  group_by(Year, flight_age_category) %>%
+  summarise(avg_delay = mean(ArrDelay, na.rm = TRUE), .groups = "drop")
+
+flights_age_summary$flight_age_category <- factor(
+  flights_age_summary$flight_age_category,
+  levels = c("New", "Mid-age", "Old")
+)
+
+ggplot(flights_age_summary, aes(x = Year, y = avg_delay, color = as.factor(flight_age_category), group = flight_age_category)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 0.8) +
+  scale_y_continuous(limits = c(0, 14), breaks = seq(0, 14, 2)) +
+  labs(title = "Average Arrival Delays of New, Mid-age and Old Planes Across Years",
+       x = "Year",
+       y = "Average Arrival Delay (mins)",
+       color = "Flight Age Category"
+      ) +
+
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(size = 9),
+        axis.text.y = element_text(size = 9),
+        plot.title = element_text(hjust = 0, face = "bold"),
+        legend.position = "bottom",
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(size = 9),
+        plot.margin = margin(10, 10, 20, 20)
+  ) 
+        
+# calculaing total distance and utilisation rate per TailNum as of latest flight date and merging flight_age and flight_age_category and ArrDelay for plotting  
+total_plane_distance_df <- flights_filtered %>%
+  group_by(TailNum) %>%
+  summarise(
+    total_distance = sum(Distance,na.rm = TRUE),
+    .groups = "drop"
+  )
+
+latest_flight_age <- flights_filtered %>% 
+  filter(Year == 2008) %>%   # also filters out TailNum that did not fly in 2008
+  group_by(TailNum) %>%
+  slice_max(flight_date, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(TailNum, flight_age, flight_age_category)
+
+total_plane_distance_df <- total_plane_distance_df %>%
+  left_join(latest_flight_age, by = "TailNum") %>%
+  mutate(util_rate = total_distance / flight_age)
+
+# Plotting a scatter plot to see the correlation between the age of the planes & the utilisation rate of each TailNum that flew in 2008
+total_plane_distance_df$flight_age_category <- factor(total_plane_distance_df$flight_age_category, levels = c("New", "Mid-age", "Old"))
+
+ggplot(total_plane_distance_df, aes(x = flight_age, y = util_rate, color = flight_age_category)) +
+geom_point(alpha = 0.6) +
+geom_smooth(method = "lm", se = FALSE, color = "black") +
+geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+scale_y_continuous(labels = comma) + 
+labs(
+  title = "Flight Age to Utilisation Rate Of Planes ",
+  x = "Flight Age (Years)",
+  y = "Utilisation Rate",
+  color = "Flight Age Category"
+) +
+theme_minimal(base_size = 9) +
+theme(
+  axis.text.x = element_text(size = 9),
+  axis.text.y = element_text(size = 9),
+  plot.title = element_text(size = 11, hjust = 0, face = "bold"),
+  plot.margin = margin(10, 10, 20, 20),
+  legend.text = element_text(size = 9),
+  legend.title = element_text(size = 9, face = "bold"),
+  legend.position = "bottom"
+) 
+        
+# Categorising utilisation rates into 3 quantiles - Low, Medium & High and constructing a heat map to show if the utilisation rate of a plane could also leads to longer delays of the plane
+avg_delay_by_tailnum <- flights_filtered %>%
+  group_by(TailNum) %>%
+  summarise(avg_delay = mean(ArrDelay, na.rm = TRUE), .groups = "drop")
+
+util_quantiles <- total_plane_distance_df %>%
+  left_join(avg_delay_by_tailnum, by = "TailNum") %>%
+  mutate(
+    util_group = ntile(util_rate, 3),
+    util_group = factor(util_group, labels = c("Low", "Medium", "High"))
+  )
+
+utils_to_delays <- util_quantiles %>%
+  group_by(flight_age_category, util_group, .drop = FALSE) %>%
+  summarise(group_avg_delay = mean(avg_delay, na.rm = TRUE), .groups = "drop") %>%
+  complete(flight_age_category, util_group, fill = list(avg_delay = NA))
+
+utils_to_delays$flight_age_category <- factor(utils_to_delays$flight_age_category, levels = c("New", "Mid-age", "Old"))
+
+ggplot(utils_to_delays, aes(x = util_group, y = flight_age_category, fill = group_avg_delay)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = ifelse(is.na(group_avg_delay), "NA", round(group_avg_delay, 1))), size = 5, fontface = "bold") +
+  scale_fill_gradient2(low = "#2ECC71", mid = "#F4D03F", high = "#E74C3C", midpoint = median(utils_to_delays$group_avg_delay, na.rm = TRUE), name = "Avg Arr Delay (mins)") +
+labs(title = "Impact Of Plane Utilisation on Average Arrival Delays",
+     x = "Utilisation Rate Group",
+     y = "Flight Age Category",
+     fill = "Avg Arrival Delay (mins)"
+     ) +
+theme_minimal(base_size = 9) +
+  theme(panel.spacing = unit(1, "lines"),
+        axis.text.x = element_text(size = 9, margin = margin(t = 10), face = "bold"),
+        axis.text.y = element_text(size = 9, margin = margin(r = 10), face = "bold"),
+        plot.title = element_text(hjust = 0, face = "bold"),
+        legend.position = "top",
+        legend.justification = "right",   
+        legend.text = element_text(size = 9, face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.key.width = unit(2, "cm"),
+        plot.margin = margin(10, 10, 20, 20)
+        ) 
+
+# c) Fit a logistic regression model for the probability of diverted US flights using as many features available 
+
+# Changing diverted column to a factor
+flights_df$Diverted <- as.factor(flights_df$Diverted)
+
+# Removing cancelled flights from flights_df dataframe
+flights_df <- flights_df %>% 
+filter(Cancelled == 0 & Diverted == 0 & DepTime < 2400 & ArrTime < 2400 | Diverted == 1)
+
+# Calculating the proportion of diverted flights from the flights_df dataframe for each year 
+div_summary <- flights_df %>%
+  group_by(Year) %>%
+  summarise(
+    total_flights = n(),
+    div_count = sum(Diverted == 1, na.rm = TRUE),
+    div_percent = (div_count / total_flights) * 100
+)
+
+print(div_summary)
+
+# Importing carriers_df and airports_df for construction of model 
+carriers_df <- read.csv("carriers.csv")
+airports_df <- read.csv("airports.csv")
+
+# creating a dataframe to select column in airports_df for the coordinates of the airports 
+filtered_airports <- airports_df %>%
+select(iata, lat, long)
+
+# Merging coordinates column  for the destination airports into flights_df dataframe and removing unnecessary origin column in dataframe
+flights_df <- flights_df %>%
+left_join(filtered_airports %>% select(iata, lat, long), by = c("Dest" = "iata")) %>%
+rename(dest_lat = lat, dest_long = long) %>%
+select(-Origin) 
+
+# Calculating the diversion rates for each airport using the the total arrivals of the respective airports, including the diverted flights 
+airport_summary <- flights_df %>%
+  group_by(Year, Dest, dest_lat, dest_long) %>%
+  summarise(
+    total_arr = n(),
+    div_arrivals = sum(Diverted == 1, na.rm = TRUE),
+    div_rate = div_arrivals / total_arr * 100,
+    .groups = "drop"
+  )
+
+# Extracting top 10 airports for each year in terms of diversion rates
+top_ten_airports <- airport_summary %>%
+  filter(total_arr >= 50) %>%
+  group_by(Year) %>%
+  slice_max(order_by = div_rate, n = 10, with_ties = FALSE) %>%
+  ungroup()
+
+# plotting map with density plots for airports based on the number of diversions using the destination lat and long
+library(maps)
+library(ggrepel)
+
+ggplot(top_ten_airports, aes(x = dest_long, y = dest_lat)) +
+  borders("state", colour = "gray50", fill = "gray85") +  
+  geom_point(
+  aes(size = total_arr, fill = div_rate), 
+  shape = 21,              
+  color = "black",         
+  stroke = 0.3,            
+  alpha = 0.8              
+) +
+scale_size_continuous(
+  range = c(3, 7), 
+  name = "Total No. of Arrivals"
+) +
+scale_fill_gradientn(
+  colors = c("#00FF00", "#FFFF00", "#FFA500", "#FF4500",      "#8B0000"),  
+  values = scales::rescale(c(0, 10, 25, 50, 100)),              
+  name = "Diversion Rate (%)"
+) +
+geom_text_repel(
+  aes(label = Dest), max.overlaps = 100, size = 2.7,
+  fontface = "bold", segment.size = 0.2, box.padding = 0.5,
+  min.segment.length = 0, nudge_y = 0.7, direction = "both"
+  ) +
+coord_quickmap(xlim = c(-175, -60), ylim = c(15, 75)) + 
+labs(
+  title = " Top 10  US Destination Airports By Diversion Rate",
+  subtitle = " Total No. of Arrival Flights is represented by Dot Size",
+  x = "Longitude",
+  y = "Latitude"
+) +
+facet_wrap(~ Year) +
+theme_minimal(base_size = 9) +
+theme(
+  plot.title = element_text(face = "bold", hjust = 0),
+  legend.position = "bottom",
+  plot.margin = margin(10, 10, 20, 20),
+  axis.text.x = element_text(size = 8, face = "bold"),
+  axis.text.y = element_text(size = 8, face = "bold")
+  )
+
+# Converting carriers to factors for construction of model
+carriers_df$Code <- as.factor(carriers_df$Code)
+
+# Changing the column name of the carrier in flights_df for merging
+flights_df <- flights_df %>%
+rename(Code = UniqueCarrier)
+
+# Merging carriers_df into flights_df and replacing the unique carrier column with the carrier name
+flights_df <- flights_df %>%
+left_join(carriers_df %>% select(Code, Description), by = "Code") %>%
+select(-Code) %>%
+rename(carrier = Description)
+
+# Converting diverted column in flights_df to numeric for construction of bar chart
+flights_df$Diverted <- as.numeric(as.character(flights_df$Diverted))
+
+# Extracting top 10 carriers per year
+top_div_carriers <- carrier_div %>%
+  group_by(Year) %>%
+  slice_max(order_by = div_flights, n = 10, with_ties = FALSE) %>%
+  ungroup()
+  
+# Shortening the carrier name for better plotting
+library(stringr)
+
+top_div_carriers <- top_div_carriers %>%
+  mutate(carrier = str_replace(
+    carrier,
+    "US Airways Inc\\. \\(Merged with America West 9/05\\. Reporting for both starting 10/07\\.\\)",
+    "US Airways Inc."
+  ))
+
+# Constructing grouped bar graph for the number of diverted flights for the top 10 carriers within each year with the percentage of diversion labelled
+library(tidytext)
+
+ggplot(top_div_carriers, 
+       aes(x = reorder_within(carrier, div_flights, Year), 
+           y = div_flights, 
+           fill = div_rate)) +
+  geom_col() +
+  geom_text(
+    aes(label = paste0(round(div_rate, 3), "%")),
+    hjust = 1.05,
+    size = 2.3,
+    fontface = "bold"
+  ) +
+  facet_wrap(~ Year, scales = "free_y") +
+  scale_x_reordered() +  
+  coord_flip() +
+  scale_fill_gradientn(
+    colors = c("yellow", "orange", "red"),
+    values = scales::rescale(c(0, 0.2, 0.5, 1)),
+    name = "Diversion Rate (%)"
+  ) +
+  labs(
+    title = "Top 10 Carriers by No. Of Diverted Flights Across Years",
+    subtitle = "% represents the diversion rates of each carrier for the respective years",
+    x = "Carriers",
+    y = "No. of Diverted Flights"
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    axis.text.x = element_text(size = 7, face = "bold"),
+    axis.text.y = element_text(size = 7, face = "bold"),
+    plot.title = element_text(size = 11, hjust = 0, face = "bold"),
+    plot.subtitle = element_text(size = 8, margin = margin(b = 10)),
+    plot.margin = margin(10, 10, 20, 20),
+    legend.position = "top"
+  )
+
+# Extracting hour from DepTime & ArrTime for consstruction of correlation matrix
+flights_df$dep_hour <- floor(flights_df$DepTime / 100) 
+flights_df$arr_hour <- floor(flights_df$ArrTime / 100)
+
+# Removing all unnecessary columns from flights_df dataframe for modelling
+flights_df <- flights_df %>%
+  select(-DepTime, -CRSDepTime, -ArrTime, -CRSArrTime, -FlightNum,-ActualElapsedTime, -CRSElapsedTime, -AirTime, -DepDelay, -TaxiIn, -TaxiOut, -Cancelled, -CancellationCode, -CarrierDelay, -WeatherDelay, -NASDelay, -SecurityDelay, -LateAircraftDelay)
+
+# Constructing logistic regression model based on features mentioned and engine type
+library(forcats)
+library(broom)
+
+div_lrm <- function(year_value, sampling_ratio = 0.05) {
+data_year <- flights_df %>% 
+filter(Year == year_value) 
+
+# Balancing the datasets & filtering carriers to top 3 carriers and destination airports each respectively in terms of flights count for efficient modelling
+diverted <- data_year %>% filter(Diverted == 1)
+  not_diverted <- data_year %>%
+    filter(Diverted == 0) %>%
+    group_by(carrier, Dest) %>%
+    ungroup()
+
+  balanced_data <- bind_rows(diverted, not_diverted)
+  
+  top_three_airports <- balanced_data %>%
+    group_by(Dest) %>%
+    summarise(
+      total_flights = n(),
+      div_arr = sum(Diverted == 1),
+      div_rate = div_arr / total_flights * 100,
+      .groups = "drop"
+    ) %>%
+    filter(total_flights >= 50) %>%
+    slice_max(order_by = div_rate, n = 3, with_ties = FALSE) %>%
+    pull(Dest) %>%
+    as.character()
+  
+  top_three_carriers <- balanced_data %>%
+    group_by(carrier) %>%
+    summarise(div_flights = sum(Diverted == 1), .groups = "drop") %>%
+    slice_max(order_by = div_flights, n = 3, with_ties = FALSE) %>%
+    pull(carrier)
+  
+  balanced_data <- balanced_data %>%
+    filter(carrier %in% top_three_carriers) %>%
+    mutate(
+      carrier = droplevels(factor(carrier)),
+      Dest = droplevels(factor(Dest))
+    ) %>%
+    droplevels()
+
+# Defining and fitting formula into model 
+model_form <- glm(
+  Diverted ~ Month + DayOfWeek + dep_hour + arr_hour + Distance + carrier +  Dest,
+  data = balanced_data, family = binomial,
+  control = glm.control(maxit = 50) 
+)
+
+return(model_form)
+}
+
+# Run logistic regression for each year and store models
+years <- 2004:2008
+
+for (yr in years) {
+  cat("\n Running and saving model for year:", yr, "\n")
+  
+  model <- tryCatch({
+    div_lrm(yr, sampling_ratio = 0.05)
+  }, error = function(e) {
+    message("Error in year ", yr, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (!is.null(model)) {
+    saveRDS(model, file = paste0("model_", yr, ".rds"))
+  }
+  
+  flights_year <- flights_df %>% filter(Year == yr)
+  write.csv(flights_year, file = paste0("~/Desktop/", yr, "_model.csv"), row.names = FALSE)
+  
+  rm(model, flights_year)
+  gc()
+}
+
+# Loading saved models into a list 
+yr_models <- list()
+
+for (yr in years) {
+  model_path <- paste0("model_", yr, ".rds")
+  if (file.exists(model_path)) {
+    yr_models[[as.character(yr)]] <- readRDS(model_path)
+  }
+}
+
+# summarising the models
+lapply(yr_models, summary)
+
+# Calculating odds ratios
+odds_ratios <- lapply(yr_models, function(m) exp(coef(m)))
+print(odds_ratios)
+
+# Predicting diversion probability using model
+predict_div <- function(year_value) {
+  year_model <- yr_models[[as.character(year_value)]] 
+  pred_year <- flights_df %>% 
+  filter(Year == year_value) %>%
+  mutate(
+      carrier = droplevels(factor(carrier)),
+      Dest = droplevels(factor(Dest))
+  )
+  pred_year$pred_prob <- predict(year_model, newdata = pred_year, type = "response")
+  return(pred_year)
+}
+
+# Predict for each year & combine all years into a dataset
+pred_data <- bind_rows(lapply(years, predict_div)) %>%
+  mutate(  
+    pred_prob = round(pred_prob, 4),
+    pred_class = ifelse(pred_prob >= 0.5, 1, 0)
+  )
+# View sample predictions
+head(pred_data %>% select(Year, pred_prob))
+
+# Creating a confusion matrix to find out the number of flights incorrectly predicted
+conf_matrix <- table(
+  Predicted = pred_data$pred_class,
+  Actual = as.numeric(as.character(pred_data$Diverted))
+)                    
+print(conf_matrix)
+
+# Calculating accuracy of model in predicting diverted flights and round it off to 4dp
+model_acc <- sum(diag(conf_matrix)) / sum(conf_matrix)
+
+print(paste("Model Accuracy:", round(model_acc, 3)))
+
+# Importing libraries for visualising coefficients
+library(ggridges)
+library(broom)
+
+# Extracting coefficients from models
+coef_list <- lapply(names(yr_models), function(Year) {
+  tidy(yr_models[[Year]]) %>%
+    mutate(Year = as.numeric(Year))
+})
+
+# Combining coefficients of years into single dataframe
+coef_df <- bind_rows(coef_list)
+
+# Calculateing average absolute coefficient for ordering and labeling of coefficents
+term_importance <- coef_df %>%
+  group_by(term) %>%
+  summarise(mean_abs_coef = mean(abs(estimate), na.rm = TRUE), .groups = "drop")
+
+# Ordering terms by average absolute coefficient in desc order
+coef_df <- coef_df %>%
+  left_join(term_importance, by = "term") %>%
+  mutate(term = fct_reorder(term, mean_abs_coef, .desc = TRUE))
+
+# Creating ridgline plot to visualise coefficients over years (gradient colours to differentiate high & low coefficients)
+ggplot(coef_df, aes(x = Year, y = estimate, fill = estimate)) +
+  geom_density_ridges(scale = 2, alpha = 0.7, rel_min_height = 0.01) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  facet_wrap(~ term, scales = "free_y") +
+  geom_text(
+    data = term_importance,
+    aes(x = Inf, y = Inf, label = paste0("Avg: ", round(mean_abs_coef, 3))),
+    hjust = 1.1, vjust = 1.5, inherit.aes = FALSE, size = 3
+  ) +
+labs(
+  title = "Distribution Of Feature Coefficients Over Time",
+  subtitle = "(arranged by average of absolute coefficient values)",
+  x = "Year",
+  y = "Coefficient Estimate",
+  fill = "Estimate"
+) +
+theme_minimal() +
+theme(
+  legend.position = "top",
+  plot.margin = margin(10, 10, 20, 20),
+  axis_text_x = element_text(size = 7, face = "bold"),
+  axis_text_y = element_text(size = 7, face = "bold")
+      )
+      
