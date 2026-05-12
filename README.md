@@ -16,7 +16,7 @@ The analysis combines:
 
 ## Dataset
 
-The data used in this project originates from the Harvard Dataverse US Flights database containing commercial flight data from **2004 to 2008**, including:
+The data used in this project originates from the Harvard Dataverse US Flights database containing flight data from **2004 to 2008**, including:
 
 * Flight schedules
 * Arrival and departure delays
@@ -65,22 +65,7 @@ Final report summarising:
 
 ### `Q2 R.Rmd`
 
-R Markdown source file containing the statistical analysis and visualisations used in the report.
-
----
-
-## Key Topics Covered
-
-* Flight delay trend analysis
-* Diversion prediction under severe class imbalance
-* Aircraft age vs delay analysis
-* Operational and temporal risk factors
-* Feature engineering using historical diversion rates
-* Non-linear modelling using CatBoost
-* Permutation importance analysis
-* PR-AUC lift analysis against baseline diversion rates
-
----
+R Markdown source file containing the same analysis from both python files in R code.
 
 ## Tools & Libraries
 
@@ -99,19 +84,6 @@ R Markdown source file containing the statistical analysis and visualisations us
 * ggplot2
 * dplyr
 * tidyr
-
----
-
-## Key Findings
-
-* Older aircraft generally experienced higher average delays across years.
-* Diversion behaviour was strongly influenced by operational, temporal, and airport-specific factors.
-* Historical route and destination diversion rates improved predictive capability.
-* CatBoost substantially outperformed Logistic Regression in identifying rare diversion events due to its ability to capture:
-
-  * non-linear relationships
-  * interaction effects
-  * high-cardinality categorical variables
 
 ---
 
