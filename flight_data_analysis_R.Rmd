@@ -1,5 +1,5 @@
 ---
-title: "ST2195 Coursework part 2 [Flight Data Analysis (2004 - 2008)]"
+title: "ST2195 Coursework [Flight Data Analysis (2004 - 2008)]"
 author: "inesh"
 date: "`r Sys.Date()`"
 output: html_document
